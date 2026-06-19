@@ -10,6 +10,7 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-22.04
+
     container:
       image: kivy/buildozer:latest
 
@@ -17,13 +18,24 @@ jobs:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Ver archivos del proyecto
+      - name: Verificar archivos
         run: |
           pwd
           ls -la
-          ls -la assets || true
+          test -f main.py
+          test -f buildozer.spec
 
-      - name: Compilar APK con Buildozer Docker
+      - name: Corregir permiso root de Buildozer
+        run: |
+          sed -i 's/warn_on_root = 1/warn_on_root = 0/g' buildozer.spec
+          grep -n "warn_on_root" buildozer.spec
+
+      - name: Limpiar salida anterior
+        run: |
+          rm -rf bin
+          rm -rf .buildozer/android/app
+
+      - name: Compilar APK
         run: |
           buildozer android debug
 
