@@ -10,68 +10,20 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-22.04
+    container:
+      image: kivy/buildozer:latest
 
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Configurar Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Instalar dependencias del sistema
+      - name: Ver archivos del proyecto
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            python3-pip python3-setuptools python3-wheel \
-            git zip unzip openjdk-17-jdk \
-            autoconf libtool pkg-config zlib1g-dev \
-            libncurses5-dev libncursesw5-dev libtinfo5 \
-            cmake libffi-dev libssl-dev \
-            libltdl-dev wget
+          pwd
+          ls -la
+          ls -la assets || true
 
-      - name: Configurar Android SDK base
-        uses: android-actions/setup-android@v3
-
-      - name: Preparar SDK interno para Buildozer
-        run: |
-          export BSDK="$HOME/.buildozer/android/platform/android-sdk"
-          mkdir -p "$BSDK"
-
-          sdkmanager --sdk_root="$BSDK" \
-            "cmdline-tools;latest" \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "build-tools;37.0.0" || true
-
-          mkdir -p "$BSDK/tools/bin"
-          ln -sf "$BSDK/cmdline-tools/latest/bin/sdkmanager" "$BSDK/tools/bin/sdkmanager"
-          ln -sf "$BSDK/cmdline-tools/latest/bin/avdmanager" "$BSDK/tools/bin/avdmanager"
-
-          yes | "$BSDK/tools/bin/sdkmanager" --sdk_root="$BSDK" --licenses || true
-
-          mkdir -p "$BSDK/licenses"
-          cat > "$BSDK/licenses/android-sdk-license" << 'EOF'
-          24333f8a63b6825ea9c5514f83c2829b004d1fee
-          84831b9409646a918e30573bab4c9c91346d8abd
-          d56f5187479451eabf01fb78af6dfcb131a6481e
-          8933bad161af4178b1185d1a37fbf41ea5269c55
-          EOF
-
-      - name: Instalar Buildozer
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install buildozer cython==0.29.36
-
-      - name: Limpiar compilaciones anteriores
-        run: |
-          rm -rf bin
-          rm -rf .buildozer/android/app
-
-      - name: Compilar APK
+      - name: Compilar APK con Buildozer Docker
         run: |
           buildozer android debug
 
