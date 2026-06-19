@@ -93,6 +93,11 @@ SUPABASE_URL = "https://xanrhspoxxbrwtygzbdb.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhhbnJoc3BveHhicnd0eWd6YmRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NTkxMTcsImV4cCI6MjA5NzQzNTExN30.L-yarrZnZgmyQGHO_i6EL8LI9z7UXX80dfm2byTJHNs"
 COBRADOR_ID = "e058ca8f-210f-4c2e-8c7d-33ed239b3f20"
 COBRADOR_NOMBRE = "PACHO"
+
+# Versión para cliente único: el dueño es administrador y cobrador a la vez.
+MODO_DUENO_UNICO = True
+DUENO_COBRADOR_ID = COBRADOR_ID
+DUENO_NOMBRE = "PACHO"
 CENTRAL_CASH_ID = "CAJA_CENTRAL"
 CENTRAL_CASH_NAME = "CAJA CENTRAL ADMIN"
 
@@ -1922,11 +1927,11 @@ def get_db_path():
             if app and getattr(app, "user_data_dir", None):
                 db_dir = Path(app.user_data_dir)
                 db_dir.mkdir(parents=True, exist_ok=True)
-                return str(db_dir / "cobros_v12_campo_v2.db")
+                return str(db_dir / "cobros_v12_pacho_dueno_limpio.db")
         except Exception:
             pass
 
-    return str(Path(__file__).resolve().parent / "cobros_v12_campo_v2.db")
+    return str(Path(__file__).resolve().parent / "cobros_v12_pacho_dueno_limpio.db")
 
 
 def get_connection():
@@ -3194,13 +3199,17 @@ def clear_all_data_db():
 def cash_owner_id():
     """
     Propietario operativo de la caja.
-    - Cobrador: su propio cobrador_id.
-    - Admin: cadena vacía, porque el admin ve consolidado y no abre caja propia.
+    - Modo dueño único: admin y cobrador usan la misma caja del dueño.
+    - Multiusuario: cada cobrador usa su propia caja y admin ve consolidado.
     """
+    if MODO_DUENO_UNICO:
+        return active_cobrador_id() or DUENO_COBRADOR_ID or COBRADOR_ID
     return active_cobrador_id()
 
 
 def cash_owner_label():
+    if MODO_DUENO_UNICO and is_admin_role():
+        return active_cobrador_name() or DUENO_NOMBRE
     if is_admin_role():
         return "ADMINISTRADOR / CONSOLIDADO"
     return active_cobrador_name() or "COBRADOR"
@@ -3218,15 +3227,23 @@ def cash_period_key(date_iso=None, owner_id=None):
 
 
 def can_operate_cash():
-    """Solo un cobrador puede abrir/cerrar caja. Admin ve consolidado."""
+    """
+    Define quién puede abrir/cerrar caja.
+    - Modo dueño único: el mismo usuario admin puede operar caja.
+    - Multiusuario: solo cobradores operan caja; admin ve consolidado.
+    """
+    if MODO_DUENO_UNICO:
+        return bool(cash_owner_id())
     return not is_admin_role() and bool(cash_owner_id())
 
 
 def require_cash_open(action_text="realizar esta operación"):
-    if is_admin_role():
+    if not MODO_DUENO_UNICO and is_admin_role():
         return False, "El administrador no registra operación de caja directa. Debe revisar el consolidado o entrar como cobrador."
+
     if not cash_owner_id():
-        return False, "No hay cobrador activo. Cierra sesión e inicia con un usuario cobrador."
+        return False, "No hay cobrador activo. Cierra sesión e inicia nuevamente."
+
     status = get_journey_status()
     if status != "abierta":
         return False, f"Debes abrir la caja semanal antes de {action_text}."
@@ -3597,7 +3614,7 @@ def get_journey_status(date_iso=None):
 
 def open_cash_journey(date_iso=None, opening_cash=None, observation=""):
     if not can_operate_cash():
-        raise ValueError("Solo un usuario cobrador puede abrir su caja. El administrador ve el consolidado general.")
+        raise ValueError("Este usuario no tiene permiso para abrir caja.")
 
     week_start, week_end = week_bounds(date_iso)
     owner_id = cash_owner_id()
@@ -3640,7 +3657,7 @@ def open_cash_journey(date_iso=None, opening_cash=None, observation=""):
 
 def save_cash_closure(date_iso=None, observation="", physical_cash=None):
     if not can_operate_cash():
-        raise ValueError("Solo un usuario cobrador puede cerrar su caja. El administrador ve el consolidado general.")
+        raise ValueError("Este usuario no tiene permiso para cerrar caja.")
 
     week_start, week_end = week_bounds(date_iso)
     existing = get_cash_closure(date_iso)
@@ -3890,14 +3907,26 @@ def is_admin_role():
 
 
 def active_cobrador_id():
-    """ID del cobrador que inició sesión. Admin ve todo."""
+    """
+    ID operativo del cobrador activo.
+
+    En modo dueño único, el administrador también opera caja como cobrador.
+    Por eso no devuelve vacío para admin; devuelve su cobrador_id o el
+    DUENO_COBRADOR_ID.
+    """
     try:
         app = App.get_running_app()
+        current_id = str(getattr(app, "current_cobrador_id", "") or "").strip()
+
+        if MODO_DUENO_UNICO:
+            return current_id or DUENO_COBRADOR_ID or COBRADOR_ID
+
         if is_admin_role():
             return ""
-        return str(getattr(app, "current_cobrador_id", "") or "").strip()
+
+        return current_id
     except Exception:
-        return ""
+        return DUENO_COBRADOR_ID if MODO_DUENO_UNICO else ""
 
 
 def active_cobrador_name():
@@ -7022,7 +7051,12 @@ class LoginPinScreen(Screen):
         app.current_user_name = user.get("nombre", usuario)
         app.current_username = usuario
         app.current_role = "Administrador" if user.get("rol") == "administrador" else "Cobrador"
-        app.current_cobrador_id = user.get("cobrador_id", usuario)
+
+        raw_cobrador_id = str(user.get("cobrador_id", "") or "").strip()
+        if MODO_DUENO_UNICO and not raw_cobrador_id:
+            raw_cobrador_id = DUENO_COBRADOR_ID or COBRADOR_ID
+
+        app.current_cobrador_id = raw_cobrador_id or usuario
         app.authenticated = True
 
         # Después de iniciar sesión, descargar datos según el rol:
@@ -14420,7 +14454,7 @@ class ResumenScreen(Screen):
         self.root.add_widget(scroll)
 
     def confirm_open_day(self):
-        if is_admin_role():
+        if is_admin_role() and not MODO_DUENO_UNICO:
             show_popup(
                 "Consolidado administrativo",
                 "El administrador no abre caja propia. Cada cobrador debe abrir su caja desde su usuario.",
@@ -14588,9 +14622,14 @@ class ResumenScreen(Screen):
             )
 
     def confirm_close_day(self):
-        if is_admin_role():
-            show_popup("Consolidado administrativo", "El administrador no cierra caja propia. Cada cobrador debe cerrar su caja desde su usuario.", height=290)
+        if is_admin_role() and not MODO_DUENO_UNICO:
+            show_popup(
+                "Consolidado administrativo",
+                "El administrador no cierra caja propia. Cada cobrador debe cerrar su caja desde su usuario.",
+                height=290,
+            )
             return
+
         status = get_journey_status()
 
         if status == "sin_abrir":
@@ -14622,9 +14661,57 @@ class ResumenScreen(Screen):
 
         outer = BoxLayout(
             orientation="vertical",
-            padding=[dp(12), dp(10), dp(12), dp(10)],
+            padding=[dp(10), dp(8), dp(10), dp(8)],
             spacing=dp(8),
         )
+
+        # Encabezado fijo, compacto.
+        header = RoundedBox(
+            orientation="vertical",
+            size_hint_y=None,
+            height=dp(82),
+            padding=[dp(12), dp(8), dp(12), dp(8)],
+            spacing=dp(3),
+        )
+        header.bg_color = (0.10, 0.18, 0.34, 1)
+
+        title = Label(
+            text="Cierre semanal de caja",
+            color=WHITE,
+            bold=True,
+            font_size="17sp",
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(28),
+        )
+        title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+        subtitle = Label(
+            text=f"{cash_owner_label()}  •  {display_week_range()}",
+            color=(0.86, 0.92, 1, 1),
+            font_size="11sp",
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(22),
+        )
+        subtitle.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        status_line = Label(
+            text="Cuenta el efectivo físico y confirma el resultado.",
+            color=(0.76, 0.86, 1, 1),
+            font_size="10.5sp",
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(20),
+        )
+        status_line.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        header.add_widget(title)
+        header.add_widget(subtitle)
+        header.add_widget(status_line)
+        outer.add_widget(header)
 
         scroll = ScrollView(
             do_scroll_x=False,
@@ -14635,359 +14722,340 @@ class ResumenScreen(Screen):
             orientation="vertical",
             spacing=dp(10),
             size_hint_y=None,
-            padding=[dp(2), dp(2), dp(2), dp(8)],
+            padding=[dp(2), dp(2), dp(2), dp(18)],
         )
         content.bind(minimum_height=content.setter("height"))
 
-        # Encabezado
-        header = RoundedBox(
-            orientation="vertical",
-            size_hint_y=None,
-            height=dp(90),
-            padding=[dp(12), dp(10), dp(12), dp(10)],
-            spacing=dp(4),
-        )
-        header.bg_color = (0.94, 0.97, 1, 1)
-        header_title = Label(
-            text="Arqueo y cierre semanal",
-            color=BLUE,
-            bold=True,
-            font_size="17sp",
-            halign="left",
-            valign="middle",
-            size_hint_y=None,
-            height=dp(28),
-        )
-        header_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        header_text = Label(
-            text=(
-                "Sigue estos 3 pasos: 1) revisa toda la semana, 2) escribe el dinero en mano, "
-                "3) confirma si la caja cuadra."
-            ),
-            color=MUTED,
-            font_size="11sp",
-            halign="left",
-            valign="middle",
-        )
-        header_text.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        header.add_widget(header_title)
-        header.add_widget(header_text)
-        content.add_widget(header)
-
-        # Paso 1: Resumen del sistema
-        system_box = RoundedBox(
-            orientation="vertical",
-            size_hint_y=None,
-            height=dp(300),
-            padding=[dp(12), dp(10), dp(12), dp(10)],
-            spacing=dp(6),
-        )
-
-        step1_title = Label(
-            text="Paso 1. Resumen acumulado de la semana",
-            color=DARK,
-            bold=True,
-            font_size="14sp",
-            halign="left",
-            valign="middle",
-            size_hint_y=None,
-            height=dp(24),
-        )
-        step1_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        system_box.add_widget(step1_title)
-
-        system_box.add_widget(DetailRow("Periodo", display_week_range()))
-        system_box.add_widget(DetailRow("Caja inicial", money(opening_cash)))
-        system_box.add_widget(DetailRow("Recaudo semanal", money(metrics["collected"])))
-        system_box.add_widget(DetailRow("Ingresos de la semana", money(metrics["income"])))
-        system_box.add_widget(DetailRow("Egresos de la semana", money(metrics["expenses"])))
-        system_box.add_widget(DetailRow("Pendientes de nube", str(pending_cloud)))
-
+        # Tarjeta principal: dinero esperado.
         expected_card = RoundedBox(
             orientation="vertical",
             size_hint_y=None,
-            height=dp(76),
-            padding=[dp(12), dp(10), dp(12), dp(10)],
-            spacing=dp(2),
+            height=dp(110),
+            padding=[dp(14), dp(10), dp(14), dp(10)],
+            spacing=dp(4),
         )
-        expected_card.bg_color = (0.99, 0.97, 0.88, 1)
-        expected_lbl_1 = Label(
-            text="Dinero que deberías tener",
+        expected_card.bg_color = (0.96, 0.99, 1, 1)
+
+        expected_label = Label(
+            text="Saldo esperado en caja",
             color=MUTED,
             font_size="11sp",
             halign="center",
             valign="middle",
             size_hint_y=None,
-            height=dp(20),
+            height=dp(22),
         )
-        expected_lbl_1.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        expected_lbl_2 = Label(
+        expected_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        expected_value = Label(
             text=money(expected_cash),
-            color=DARK,
+            color=BLUE_DARK,
             bold=True,
-            font_size="22sp",
+            font_size="28sp",
             halign="center",
             valign="middle",
+            size_hint_y=None,
+            height=dp(46),
         )
-        expected_lbl_2.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        expected_card.add_widget(expected_lbl_1)
-        expected_card.add_widget(expected_lbl_2)
-        system_box.add_widget(expected_card)
-        content.add_widget(system_box)
+        expected_value.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
-        # Paso 2: Arqueo físico
+        expected_help = Label(
+            text="Caja inicial + recaudos + ingresos - egresos",
+            color=MUTED,
+            font_size="10sp",
+            halign="center",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(22),
+        )
+        expected_help.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        expected_card.add_widget(expected_label)
+        expected_card.add_widget(expected_value)
+        expected_card.add_widget(expected_help)
+        content.add_widget(expected_card)
+
+        # Resumen compacto.
+        summary_box = RoundedBox(
+            orientation="vertical",
+            size_hint_y=None,
+            height=dp(178),
+            padding=[dp(12), dp(10), dp(12), dp(10)],
+            spacing=dp(4),
+        )
+        summary_box.bg_color = (0.98, 0.99, 1, 1)
+
+        summary_title = Label(
+            text="Resumen del periodo",
+            color=DARK,
+            bold=True,
+            font_size="13sp",
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(24),
+        )
+        summary_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+        summary_box.add_widget(summary_title)
+
+        summary_box.add_widget(DetailRow("Caja inicial", money(opening_cash)))
+        summary_box.add_widget(DetailRow("Recaudo", money(metrics["collected"])))
+        summary_box.add_widget(DetailRow("Ingresos", money(metrics["income"])))
+        summary_box.add_widget(DetailRow("Egresos", money(metrics["expenses"])))
+        summary_box.add_widget(DetailRow("Pendientes nube", str(pending_cloud)))
+        content.add_widget(summary_box)
+
+        # Campo de conteo.
         count_box = RoundedBox(
             orientation="vertical",
             size_hint_y=None,
-            height=dp(168),
+            height=dp(150),
             padding=[dp(12), dp(10), dp(12), dp(10)],
-            spacing=dp(6),
+            spacing=dp(7),
         )
-        count_box.bg_color = (0.99, 0.98, 0.94, 1)
+        count_box.bg_color = (1, 0.99, 0.94, 1)
 
-        step2_title = Label(
-            text="Paso 2. Dinero físico contado",
+        count_title = Label(
+            text="Dinero físico contado",
             color=DARK,
             bold=True,
             font_size="14sp",
             halign="left",
             valign="middle",
             size_hint_y=None,
-            height=dp(24),
+            height=dp(25),
         )
-        step2_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        step2_help = Label(
-            text="Cuenta el dinero físico real y escríbelo aquí antes de cerrar.",
+        count_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        count_help = Label(
+            text="Escribe el efectivo real que tienes en la mano.",
             color=MUTED,
-            font_size="11sp",
+            font_size="10.5sp",
             halign="left",
             valign="middle",
             size_hint_y=None,
-            height=dp(32),
+            height=dp(24),
         )
-        step2_help.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        count_box.add_widget(step2_title)
-        count_box.add_widget(step2_help)
+        count_help.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
         physical_cash_input = MoneyTextInput(
-            hint_text="Ej: 2.080.000",
+            hint_text="Ej: 3.510.000",
             text=format_thousands(expected_cash),
         )
+        physical_cash_input.font_size = "22sp"
+        physical_cash_input.halign = "center"
+        physical_cash_input.size_hint_y = None
+        physical_cash_input.height = dp(54)
+
+        count_box.add_widget(count_title)
+        count_box.add_widget(count_help)
         count_box.add_widget(physical_cash_input)
         content.add_widget(count_box)
 
-        # Paso 3: Resultado de comparación
+        # Resultado visual.
         result_box = RoundedBox(
             orientation="vertical",
             size_hint_y=None,
-            height=dp(222),
+            height=dp(160),
             padding=[dp(12), dp(10), dp(12), dp(10)],
             spacing=dp(6),
         )
+        result_box.bg_color = (0.94, 0.98, 0.95, 1)
 
-        step3_title = Label(
-            text="Paso 3. Resultado del arqueo",
+        result_title = Label(
+            text="Resultado del arqueo",
             color=DARK,
             bold=True,
-            font_size="14sp",
-            halign="left",
+            font_size="13sp",
+            halign="center",
             valign="middle",
             size_hint_y=None,
             height=dp(24),
         )
-        step3_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        result_box.add_widget(step3_title)
+        result_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
-        comparison_card = RoundedBox(
-            orientation="vertical",
-            size_hint_y=None,
-            height=dp(76),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
-            spacing=dp(4),
-        )
-        comparison_card.bg_color = (0.94, 0.97, 1, 1)
         comparison_label = Label(
-            text="",
-            color=TEXT,
+            text="CAJA CUADRADA",
+            color=SUCCESS,
             bold=True,
-            font_size="16sp",
+            font_size="19sp",
+            halign="center",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(34),
+        )
+        comparison_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        difference_label = Label(
+            text="Diferencia: $ 0",
+            color=MUTED,
+            bold=True,
+            font_size="13sp",
             halign="center",
             valign="middle",
             size_hint_y=None,
             height=dp(26),
         )
-        comparison_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        difference_label = Label(
-            text="",
-            color=MUTED,
-            font_size="12sp",
+        difference_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
+        result_help = Label(
+            text="El dinero físico coincide con el sistema.",
+            color=SUCCESS,
+            font_size="11sp",
             halign="center",
             valign="middle",
-        )
-        difference_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        comparison_card.add_widget(comparison_label)
-        comparison_card.add_widget(difference_label)
-        result_box.add_widget(comparison_card)
-
-        recap_box = RoundedBox(
-            orientation="vertical",
             size_hint_y=None,
-            height=dp(82),
-            padding=[dp(10), dp(8), dp(10), dp(8)],
-            spacing=dp(2),
+            height=dp(34),
         )
-        recap_box.bg_color = (0.97, 0.98, 1, 1)
-        recap_expected = Label(text="", color=TEXT, font_size="11sp", halign="left", valign="middle", size_hint_y=None, height=dp(20))
-        recap_counted = Label(text="", color=TEXT, font_size="11sp", halign="left", valign="middle", size_hint_y=None, height=dp(20))
-        recap_diff = Label(text="", color=TEXT, font_size="11sp", halign="left", valign="middle", size_hint_y=None, height=dp(20))
-        for lbl in (recap_expected, recap_counted, recap_diff):
-            lbl.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-            recap_box.add_widget(lbl)
-        result_box.add_widget(recap_box)
+        result_help.bind(size=lambda instance, value: setattr(instance, "text_size", value))
 
-        observation_label = FieldLabel(
-            "Observación obligatoria si falta o sobra dinero"
-        )
-        observation_input = AppTextInput(
-            hint_text="Ej: faltante pendiente de verificar",
-            multiline=True,
-        )
-        observation_input.height = dp(56)
-        result_box.add_widget(observation_label)
-        result_box.add_widget(observation_input)
+        result_box.add_widget(result_title)
+        result_box.add_widget(comparison_label)
+        result_box.add_widget(difference_label)
+        result_box.add_widget(result_help)
         content.add_widget(result_box)
 
-        def refresh_comparison(*_):
-            physical = to_int(physical_cash_input.text, 0)
-            difference = physical - expected_cash
-
-            recap_expected.text = f"Dinero esperado: {money(expected_cash)}"
-            recap_counted.text = f"Dinero físico contado: {money(physical)}"
-            recap_diff.text = f"Diferencia: {money(abs(difference)) if difference != 0 else money(0)}"
-
-            if difference == 0:
-                comparison_label.text = "CAJA CUADRADA"
-                comparison_label.color = SUCCESS
-                difference_label.text = "El dinero físico coincide con el sistema."
-                difference_label.color = SUCCESS
-                comparison_card.bg_color = (0.93, 0.98, 0.93, 1)
-            elif difference > 0:
-                comparison_label.text = "HAY SOBRANTE"
-                comparison_label.color = BLUE
-                difference_label.text = f"Sobran {money(difference)} frente al sistema."
-                difference_label.color = BLUE
-                comparison_card.bg_color = (0.92, 0.97, 1, 1)
-            else:
-                comparison_label.text = "HAY FALTANTE"
-                comparison_label.color = DANGER
-                difference_label.text = f"Faltan {money(abs(difference))} frente al sistema."
-                difference_label.color = DANGER
-                comparison_card.bg_color = (1.0, 0.94, 0.94, 1)
-
-        physical_cash_input.bind(text=refresh_comparison)
-        Clock.schedule_once(refresh_comparison, 0)
-
-        # Aviso de sincronización
-        notice = RoundedBox(
+        # Observación opcional.
+        obs_box = RoundedBox(
             orientation="vertical",
             size_hint_y=None,
-            height=dp(70),
-            padding=dp(10),
+            height=dp(132),
+            padding=[dp(12), dp(10), dp(12), dp(10)],
+            spacing=dp(6),
         )
-        notice.bg_color = (1.0, 0.95, 0.95, 1) if pending_cloud > 0 else (0.93, 0.98, 0.93, 1)
-        notice_text = (
-            "Hay registros pendientes de sincronizar. Recomendación: ejecuta Carga Completa antes del cierre."
-            if pending_cloud > 0
-            else "Todo está sincronizado. Si el efectivo cuadra, puedes confirmar el cierre."
-        )
-        notice_label = Label(
-            text=notice_text,
-            color=TEXT,
-            font_size="11sp",
+        obs_box.bg_color = (0.98, 0.98, 1, 1)
+
+        obs_title = Label(
+            text="Observación del cierre",
+            color=DARK,
+            bold=True,
+            font_size="13sp",
             halign="left",
             valign="middle",
+            size_hint_y=None,
+            height=dp(24),
         )
-        notice_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
-        notice.add_widget(notice_label)
-        content.add_widget(notice)
+        obs_title.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+        observation_input = AppTextInput(
+            hint_text="Opcional. Ej: faltante justificado, sobrante, novedad del día...",
+            multiline=True,
+        )
+        observation_input.size_hint_y = None
+        observation_input.height = dp(78)
+
+        obs_box.add_widget(obs_title)
+        obs_box.add_widget(observation_input)
+        content.add_widget(obs_box)
 
         scroll.add_widget(content)
         outer.add_widget(scroll)
 
+        # Botones fijos inferiores. Siempre visibles.
+        footer = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            height=dp(104),
+            spacing=dp(7),
+        )
+
+        footer_info = Label(
+            text="Revisa el resultado antes de confirmar. Este cierre quedará guardado.",
+            color=(0.86, 0.92, 1, 1),
+            font_size="10.5sp",
+            halign="center",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(24),
+        )
+        footer_info.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+
         buttons = BoxLayout(
             orientation="horizontal",
-            spacing=dp(8),
             size_hint_y=None,
-            height=dp(48),
+            height=dp(54),
+            spacing=dp(9),
         )
-        cancel = Button(
-            text="Seguir revisando",
+
+        cancel_btn = Button(
+            text="Cancelar",
             background_normal="",
-            background_color=(0.56, 0.60, 0.66, 1),
+            background_color=(0.55, 0.58, 0.63, 1),
             color=WHITE,
             bold=True,
         )
-        confirm = Button(
+        close_btn = Button(
             text="Confirmar cierre",
             background_normal="",
-            background_color=DANGER,
+            background_color=SUCCESS,
             color=WHITE,
             bold=True,
         )
-        buttons.add_widget(cancel)
-        buttons.add_widget(confirm)
-        outer.add_widget(buttons)
+
+        buttons.add_widget(cancel_btn)
+        buttons.add_widget(close_btn)
+        footer.add_widget(footer_info)
+        footer.add_widget(buttons)
+        outer.add_widget(footer)
 
         popup = Popup(
-            title="Cierre Semanal de Caja",
+            title="",
             content=outer,
-            size_hint=(0.94, 0.94),
+            size_hint=(0.96, 0.94),
             auto_dismiss=False,
         )
-        cancel.bind(on_release=popup.dismiss)
 
-        def validate_and_close(*_):
-            physical = to_int(physical_cash_input.text, -1)
-            difference = physical - expected_cash
-            observation = observation_input.text.strip()
+        def update_comparison(*_):
+            counted = to_int(physical_cash_input.text, expected_cash)
+            difference = counted - expected_cash
 
-            if physical < 0:
-                show_popup(
-                    "Monto requerido",
-                    "Escribe cuánto dinero tienes físicamente en mano.",
+            if difference == 0:
+                result_box.bg_color = (0.92, 0.98, 0.94, 1)
+                comparison_label.text = "CAJA CUADRADA"
+                comparison_label.color = SUCCESS
+                difference_label.text = "Diferencia: $ 0"
+                difference_label.color = MUTED
+                result_help.text = "El dinero físico coincide con el sistema."
+                result_help.color = SUCCESS
+                close_btn.background_color = SUCCESS
+            elif difference > 0:
+                result_box.bg_color = (1, 0.97, 0.88, 1)
+                comparison_label.text = "SOBRANTE EN CAJA"
+                comparison_label.color = GOLD
+                difference_label.text = f"Sobrante: {money(difference)}"
+                difference_label.color = GOLD
+                result_help.text = "Hay más dinero físico que el calculado por el sistema."
+                result_help.color = GOLD
+                close_btn.background_color = GOLD
+            else:
+                result_box.bg_color = (1, 0.94, 0.94, 1)
+                comparison_label.text = "FALTANTE EN CAJA"
+                comparison_label.color = DANGER
+                difference_label.text = f"Faltante: {money(abs(difference))}"
+                difference_label.color = DANGER
+                result_help.text = "Hay menos dinero físico que el esperado."
+                result_help.color = DANGER
+                close_btn.background_color = DANGER
+
+        def scroll_to_input(instance, focus):
+            if focus:
+                Clock.schedule_once(
+                    lambda *_: scroll.scroll_to(count_box, padding=dp(90), animate=True),
+                    0.25,
                 )
-                return
 
-            pending_sync = count_pending_sync()
-            if pending_sync > 0:
-                show_popup(
-                    "Sincronización pendiente",
-                    f"No se recomienda cerrar caja con {pending_sync} registro(s) pendiente(s) por subir.\n\n"
-                    "Conéctate a internet y sincroniza antes de cerrar para proteger la información.",
-                    height=340,
-                )
-                return
+        physical_cash_input.bind(text=update_comparison)
+        physical_cash_input.bind(focus=scroll_to_input)
 
-            if difference != 0 and not observation:
-                show_popup(
-                    "Observación requerida",
-                    "La caja presenta una diferencia. Escribe una observación antes de cerrar.",
-                    height=270,
-                )
-                return
+        cancel_btn.bind(on_release=popup.dismiss)
+        close_btn.bind(
+            on_release=lambda *_: self.close_day(
+                to_int(physical_cash_input.text, expected_cash),
+                observation_input.text,
+                popup,
+            )
+        )
 
-            if difference != 0:
-                insert_audit_log(
-                    "Cerrar caja con diferencia",
-                    None,
-                    "Faltante" if difference < 0 else "Sobrante",
-                    observation,
-                )
-
-            popup.dismiss()
-            self.close_day(physical, observation)
-
-        confirm.bind(on_release=validate_and_close)
+        update_comparison()
         popup.open()
 
     def close_day(self, physical_cash=None, observation=""):
@@ -16107,7 +16175,7 @@ class CobrosV12App(App):
     route_check_interval_seconds = 900
 
     def build(self):
-        self.title = "Cobros V12 Campo V2"
+        self.title = "Cobros V12 Pacho"
         try:
             init_database()
             refresh_memory_from_db(normalize=True)
@@ -16229,8 +16297,9 @@ class CobrosV12App(App):
             if not getattr(self, "authenticated", False):
                 return
 
-            # Admin no abre caja operativa; solo ve caja central/consolidado.
-            if is_admin_role():
+            # En modo dueño único, el administrador también opera caja.
+            # En modo multiusuario normal, el admin solo ve consolidado.
+            if is_admin_role() and not MODO_DUENO_UNICO:
                 return
 
             # Si ya abrió caja, no mostrar nada.
