@@ -29,12 +29,33 @@ jobs:
             git zip unzip openjdk-17-jdk \
             autoconf libtool pkg-config zlib1g-dev \
             libncurses5-dev libncursesw5-dev libtinfo5 \
-            cmake libffi-dev libssl-dev
+            cmake libffi-dev libssl-dev \
+            libltdl-dev
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Aceptar licencias Android
+        run: |
+          yes | sdkmanager --licenses
+
+      - name: Instalar paquetes Android necesarios
+        run: |
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "cmdline-tools;latest"
 
       - name: Instalar Buildozer
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install buildozer cython==0.29.36
+
+      - name: Limpiar caché previa
+        run: |
+          rm -rf .buildozer
+          rm -rf bin
 
       - name: Compilar APK
         run: |
