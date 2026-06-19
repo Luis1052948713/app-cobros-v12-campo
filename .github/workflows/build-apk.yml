@@ -11,41 +11,67 @@ jobs:
   build-android:
     runs-on: ubuntu-22.04
 
-    container:
-      image: kivy/buildozer:latest
-
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            git \
+            zip \
+            unzip \
+            autoconf \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            libltdl-dev
+
+      - name: Instalar Buildozer y Cython
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install buildozer cython==0.29.36
+
       - name: Verificar archivos
         run: |
-          pwd
           ls -la
           test -f main.py
           test -f buildozer.spec
 
-      - name: Corregir Buildozer para GitHub Actions
+      - name: Corregir warn_on_root
         run: |
-          sed -i 's/warn_on_root = 1/warn_on_root = 0/g' buildozer.spec
-          grep -n "warn_on_root" buildozer.spec
+          sed -i 's/warn_on_root = 1/warn_on_root = 0/g' buildozer.spec || true
+          grep -n "warn_on_root" buildozer.spec || true
 
-      - name: Crear carpeta de licencias Android
+      - name: Limpiar compilación anterior
         run: |
-          mkdir -p $HOME/.buildozer/android/platform/android-sdk/licenses
-          printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\n84831b9409646a918e30573bab4c9c91346d8abd\nd56f5187479451eabf01fb78af6dfcb131a6481e\n8933bad161af4178b1185d1a37fbf41ea5269c55\n" > $HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+          buildozer android clean || true
+          rm -rf bin || true
 
-      - name: Limpiar salida anterior
-        run: |
-          rm -rf bin
-          rm -rf .buildozer/android/app
-
-      - name: Compilar APK aceptando licencias
+      - name: Compilar APK debug
         run: |
           yes | buildozer android debug
 
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: cobros-v12-campo-apk
+          name: CobrosV12Campo-APK
           path: bin/*.apk
