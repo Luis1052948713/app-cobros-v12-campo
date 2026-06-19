@@ -25,19 +25,24 @@ jobs:
           test -f main.py
           test -f buildozer.spec
 
-      - name: Corregir permiso root de Buildozer
+      - name: Corregir Buildozer para GitHub Actions
         run: |
           sed -i 's/warn_on_root = 1/warn_on_root = 0/g' buildozer.spec
           grep -n "warn_on_root" buildozer.spec
+
+      - name: Crear carpeta de licencias Android
+        run: |
+          mkdir -p $HOME/.buildozer/android/platform/android-sdk/licenses
+          printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\n84831b9409646a918e30573bab4c9c91346d8abd\nd56f5187479451eabf01fb78af6dfcb131a6481e\n8933bad161af4178b1185d1a37fbf41ea5269c55\n" > $HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
 
       - name: Limpiar salida anterior
         run: |
           rm -rf bin
           rm -rf .buildozer/android/app
 
-      - name: Compilar APK
+      - name: Compilar APK aceptando licencias
         run: |
-          buildozer android debug
+          yes | buildozer android debug
 
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
