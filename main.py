@@ -89,8 +89,8 @@ STATUS_BORDER_PAID_OFF = (0.12, 0.45, 0.78, 1)
 # ============================================================
 # Pega aquí los datos de tu proyecto Supabase.
 # No uses SERVICE_ROLE_KEY dentro de la app móvil.
-SUPABASE_URL = "https://frvzniydfdmhltxwyknh.supabase.co"
-SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZydnpuaXlkZmRtaGx0eHd5a25oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1Nzc3NjUsImV4cCI6MjA5NjE1Mzc2NX0.2NFIkalEfGf0P7d9bT_kmNW_DvMU8I9bYTqQxabV_hI"
+SUPABASE_URL = "https://xanrhspoxxbrwtygzbdb.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhhbnJoc3BveHhicnd0eWd6YmRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NTkxMTcsImV4cCI6MjA5NzQzNTExN30.L-yarrZnZgmyQGHO_i6EL8LI9z7UXX80dfm2byTJHNs"
 COBRADOR_ID = "e058ca8f-210f-4c2e-8c7d-33ed239b3f20"
 COBRADOR_NOMBRE = "PACHO"
 CENTRAL_CASH_ID = "CAJA_CENTRAL"
